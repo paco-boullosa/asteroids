@@ -68,6 +68,11 @@ const TRIPLE_SPREAD   = 0.25;  // rad (~14°) entre balas del abanico
 const POWERUP_WINDOW  = 0.7;   // fracción del nivel (en destrucciones) en la que puede aparecer
 const POWERUP_TTL     = 8;     // s antes de que el ítem desaparezca
 
+// Escudo Temporal
+const SHIELD_DURATION = 5;     // s de escudo activo
+const SHIELD_RADIUS   = 24;    // px, radio del círculo de energía
+const SHIELD_GRACE    = 1;     // s de invencibilidad tras absorber un golpe
+
 class Asteroid {
   constructor(x, y, size = 3) {
     this.x    = x;
@@ -176,6 +181,20 @@ class Ship {
         .map(d => new Bullet(ox, oy, this.angle + d));
     }
     return [new Bullet(ox, oy, this.angle)];
+  }
+
+  drawShield() {
+    if (this.dead || shieldTimer <= 0) return;
+    // Parpadeo en el último 1.5s
+    if (shieldTimer < 1.5 && Math.floor(shieldTimer * 8) % 2 === 0) return;
+    const r = SHIELD_RADIUS + Math.sin(shieldTimer * 8) * 1.5;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+    ctx.fillStyle   = 'rgba(80,180,255,0.08)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(80,180,255,0.85)';
+    ctx.lineWidth   = 2;
+    ctx.stroke();
   }
 
   draw() {
@@ -299,6 +318,8 @@ let powerUpSpawned;   // ya apareció en este nivel
 let levelKills;       // asteroides destruidos en el nivel actual
 let powerUpKillTarget; // destrucción en la que aparecerá el ítem
 let tripleShotTimer;  // s restantes de disparo triple
+let shieldTimer;      // s restantes de escudo activo (0 = inactivo)
+let shieldAvailable;  // queda el escudo de esta vida
 let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
@@ -330,6 +351,8 @@ function initGame() {
   asteroids = [];
   particles = [];
   tripleShotTimer = 0;
+  shieldTimer     = 0;
+  shieldAvailable = true;
   score  = 0;
   lives  = 3;
   level  = 1;
@@ -351,10 +374,25 @@ function explode(x, y, count = 8) {
   for (let i = 0; i < count; i++) particles.push(new Particle(x, y));
 }
 
+// Destruye un asteroide (puntos, explosión, power-up) y devuelve sus fragmentos
+function destroyAsteroid(a) {
+  a.dead = true;
+  score += POINTS[a.size];
+  explode(a.x, a.y, a.size * 5);
+  // Disparo Triple: una vez por nivel, en una destrucción aleatoria
+  levelKills++;
+  if (!powerUpSpawned && levelKills >= powerUpKillTarget) {
+    powerUp = new PowerUp(a.x, a.y);
+    powerUpSpawned = true;
+  }
+  return a.split();
+}
+
 function killShip() {
   explode(ship.x, ship.y, 14);
   ship.dead = true;
   tripleShotTimer = 0;
+  shieldTimer     = 0;
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -375,6 +413,7 @@ function update(dt) {
 
   if (state === 'dead') {
     deadTimer -= dt;
+    pressed('ArrowDown');  // descartar pulsaciones mientras se está muerto
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
     asteroids.forEach(a => a.update(dt));
@@ -382,7 +421,7 @@ function update(dt) {
       powerUp.update(dt);
       if (powerUp.dead) powerUp = null;
     }
-    if (deadTimer <= 0) { state = 'playing'; ship.reset(); }
+    if (deadTimer <= 0) { state = 'playing'; ship.reset(); shieldAvailable = true; }
     return;
   }
 
@@ -391,11 +430,18 @@ function update(dt) {
     bullets.push(...ship.tryShoot());
   }
 
+  // Activar escudo (uno por vida)
+  if (pressed('ArrowDown') && shieldAvailable && !ship.dead) {
+    shieldTimer     = SHIELD_DURATION;
+    shieldAvailable = false;
+  }
+
   ship.update(dt);
   bullets.forEach(b => b.update(dt));
   asteroids.forEach(a => a.update(dt));
   particles.forEach(p => p.update(dt));
   if (tripleShotTimer > 0) tripleShotTimer = Math.max(0, tripleShotTimer - dt);
+  if (shieldTimer > 0) shieldTimer = Math.max(0, shieldTimer - dt);
   if (powerUp) {
     powerUp.update(dt);
     if (powerUp.dead) powerUp = null;
@@ -410,16 +456,7 @@ function update(dt) {
     for (const a of asteroids) {
       if (!a.dead && !b.dead && dist(b, a) < a.radius) {
         b.dead = true;
-        a.dead = true;
-        score += POINTS[a.size];
-        explode(a.x, a.y, a.size * 5);
-        newAsteroids.push(...a.split());
-        // Disparo Triple: una vez por nivel, en una destrucción aleatoria
-        levelKills++;
-        if (!powerUpSpawned && levelKills >= powerUpKillTarget) {
-          powerUp = new PowerUp(a.x, a.y);
-          powerUpSpawned = true;
-        }
+        newAsteroids.push(...destroyAsteroid(a));
       }
     }
   }
@@ -434,7 +471,18 @@ function update(dt) {
   }
 
   // Nave vs asteroide
-  if (ship.invincible <= 0) {
+  if (shieldTimer > 0) {
+    // Escudo: absorbe el primer asteroide que toque su círculo
+    for (const a of asteroids) {
+      if (dist(ship, a) < SHIELD_RADIUS + a.radius * 0.82) {
+        const frags = destroyAsteroid(a);
+        asteroids = asteroids.filter(x => !x.dead).concat(frags);
+        shieldTimer     = 0;
+        ship.invincible = SHIELD_GRACE;
+        break;
+      }
+    }
+  } else if (ship.invincible <= 0) {
     for (const a of asteroids) {
       if (dist(ship, a) < ship.radius + a.radius * 0.82) {
         killShip();
@@ -484,6 +532,17 @@ function drawHUD() {
     ctx.fillText(`TRIPLE  ${Math.ceil(tripleShotTimer)}s`, 14, 46);
   }
 
+  const shieldY = tripleShotTimer > 0 ? 66 : 46;
+  if (shieldTimer > 0) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgb(80,180,255)';
+    ctx.fillText(`ESCUDO  ${Math.ceil(shieldTimer)}s`, 14, shieldY);
+  } else if (shieldAvailable) {
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(80,180,255,0.55)';
+    ctx.fillText('ESCUDO  [↓]', 14, shieldY);
+  }
+
 }
 
 function drawOverlay(title, sub) {
@@ -505,6 +564,7 @@ function draw() {
   if (powerUp) powerUp.draw();
   bullets.forEach(b => b.draw());
   ship.draw();
+  ship.drawShield();
 
   drawHUD();
 

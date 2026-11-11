@@ -33,6 +33,7 @@ Luego visita `http://localhost:3000`.
 | `←` `→`   | Rotar nave |
 | `↑`       | Propulsar  |
 | `Espacio` | Disparar   |
+| `↓`       | Escudo temporal (1 por vida, 5 s o hasta absorber un impacto) |
 
 ## Puntuación
 
